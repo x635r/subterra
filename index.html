@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#05090b" />
+    <meta
+      name="description"
+      content="SubTerra — 任意城市的地下世界三维透视仪。搜索世界上任何一座城市，一键潜入地表之下，逐层揭开地铁、管廊、暗河的立体结构。"
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>SubTerra · 城市地下世界三维切片透视仪</title>
+  </head>
+  <body>
+    <div id="app" class="app is-booting">
+      <div id="map" class="map" aria-label="SubTerra 3D underground map"></div>
+
+      <div class="map-atmosphere" aria-hidden="true">
+        <div class="map-glow"></div>
+        <div class="map-vignette"></div>
+        <div class="map-scanlines"></div>
+        <div class="map-noise"></div>
+      </div>
+
+      <div id="siteTags" class="site-tags" aria-hidden="true"></div>
+      <div id="depthRuler" class="depth-ruler" aria-hidden="true"></div>
+
+      <div id="targetReticle" class="target-reticle" aria-hidden="true">
+        <span class="target-reticle__ring"></span>
+        <span class="target-reticle__cross target-reticle__cross--x"></span>
+        <span class="target-reticle__cross target-reticle__cross--y"></span>
+        <span class="target-reticle__label">BORE AXIS</span>
+        <span class="target-reticle__depth" id="reticleDepth">−60.0 M</span>
+      </div>
+
+      <header class="topbar">
+        <div class="brand">
+          <svg class="brand__mark" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+            <circle cx="24" cy="24" r="18.5" stroke="currentColor" stroke-opacity=".18" />
+            <circle cx="24" cy="24" r="12" stroke="currentColor" stroke-opacity=".4" />
+            <circle cx="24" cy="24" r="2.2" fill="currentColor" />
+            <path d="M24 1.5v9M24 37.5v9M1.5 24h9M37.5 24h9" stroke="currentColor" stroke-width="1.2" />
+            <path d="M8.4 8.4 14 14M34 34l5.6 5.6M39.6 8.4 34 14M14 34l-5.6 5.6" stroke="currentColor" stroke-opacity=".5" />
+            <path d="M9 28.5h30" stroke="#ff9b5f" stroke-width="1.4" />
+            <path d="M15 24v9M24 24v13M33 24v7" stroke="#ff9b5f" stroke-opacity=".65" />
+          </svg>
+          <div class="brand__copy">
+            <span class="brand__name">SUBTERRA</span>
+            <span class="brand__tagline">GLOBAL SUBSURFACE ATLAS</span>
+          </div>
+        </div>
+
+        <div class="topbar__center">
+          <div class="search-shell">
+            <svg class="search-shell__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="1.5" />
+              <path d="m15.5 15.5 4.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+            <input
+              id="citySearch"
+              type="search"
+              class="search-shell__input"
+              placeholder="搜索任意城市 / Search any city…"
+              autocomplete="off"
+              spellcheck="false"
+              role="combobox"
+              aria-expanded="false"
+              aria-controls="searchResults"
+              aria-label="Search for a city"
+            />
+            <kbd class="search-shell__hint">F</kbd>
+            <div class="search-results" id="searchResults" role="listbox" hidden></div>
+          </div>
+          <div class="locator">
+            <span class="locator__eyebrow">
+              <span id="areaName">—</span>
+              <i>/</i>
+              <span id="areaContext">LOCATING</span>
+            </span>
+            <span class="locator__coords" id="cursorCoords">—</span>
+          </div>
+          <div class="compass" id="compass" aria-hidden="true">
+            <span class="compass__ring"></span>
+            <span class="compass__n">N</span>
+            <span class="compass__needle" id="compassNeedle"></span>
+            <span class="compass__bearing" id="bearingValue">000°</span>
+          </div>
+        </div>
+
+        <div class="topbar__actions">
+          <div class="feed-pill" id="feedPill">
+            <span class="status-light" id="feedPillLight"></span>
+            <span id="feedPillLabel">SCANNING</span>
+          </div>
+          <button class="icon-button mobile-only" id="sitesToggle" type="button" aria-label="Open controls" title="Controls">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M4 12h10M4 17h16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+          </button>
+          <button class="icon-button mobile-only" id="intelToggle" type="button" aria-label="Open area intelligence" title="Intelligence">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /><circle cx="12" cy="12" r="6.2" stroke="currentColor" stroke-width="1.4" /><circle cx="12" cy="12" r="1.5" fill="currentColor" /></svg>
+          </button>
+          <button class="icon-button" id="helpButton" type="button" aria-label="Open help" title="Help & shortcuts">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.4" /><path d="M9.8 9.2a2.3 2.3 0 0 1 4.45.9c0 1.8-2.25 2.05-2.25 3.65" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /><circle cx="12" cy="17" r=".9" fill="currentColor" /></svg>
+          </button>
+          <button class="icon-button" id="fullscreenButton" type="button" aria-label="Toggle fullscreen" title="Fullscreen">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="mobile-context" aria-hidden="true">
+        <span id="mobileSiteCode">SUBSURFACE</span>
+        <b id="mobileSiteName">—</b>
+        <em id="mobileDepth">−60 M</em>
+      </div>
+
+      <div class="edge-marker edge-marker--tl" aria-hidden="true"></div>
+      <div class="edge-marker edge-marker--tr" aria-hidden="true"></div>
+
+      <aside class="panel panel--left" id="leftPanel" aria-label="Area and bore controls">
+        <div class="panel__corner panel__corner--a" aria-hidden="true"></div>
+        <div class="panel__corner panel__corner--b" aria-hidden="true"></div>
+        <button class="panel-close mobile-only" id="sitesClose" type="button" aria-label="Close controls">×</button>
+
+        <section class="panel-section panel-section--hero">
+          <div class="section-kicker">
+            <span><b id="areaIndex">00</b> / LOADED AREA</span>
+            <span class="mini-status"><i></i> <span id="areaStatus">ARMED</span></span>
+          </div>
+          <h1 class="site-title" id="areaTitle">LOCATING…</h1>
+          <div class="site-subtitle">
+            <span id="areaSubtitle">SEARCH ANY CITY TO BEGIN</span>
+            <span class="site-subtitle__line"></span>
+          </div>
+          <p class="site-summary" id="areaSummary">
+            在搜索框输入世界上任意一座城市，或直接拖拽地图到任意位置。SubTerra 会从矢量瓦片实时提取该区域的隧道、地铁、暗渠与管廊，并按深度重建地下立体结构。
+          </p>
+
+          <div class="city-chips" id="cityChips" role="list" aria-label="Quick city entry"></div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-kicker">
+            <span>BORE PARAMETERS</span>
+            <span class="section-kicker__value">LIVE CONTROL</span>
+          </div>
+
+          <div class="range-block">
+            <div class="range-header">
+              <label for="apertureSlider">APERTURE / 切片直径</label>
+              <output id="apertureValue">Ø 760 M</output>
+            </div>
+            <div class="range-track range-track--aperture">
+              <input id="apertureSlider" type="range" min="280" max="1500" step="10" value="760" aria-label="Excavation aperture diameter" />
+            </div>
+            <div class="range-scale"><span>280 M</span><span>1500 M</span></div>
+          </div>
+
+          <div class="layer-list" id="layerList">
+            <button class="layer-row" type="button" data-kind="subway" role="switch" aria-checked="true">
+              <span class="layer-row__key"><i class="layer-dot layer-dot--subway"></i><span>地铁隧道<small>METRO TUNNELS</small></span></span>
+              <span class="layer-row__tail"><b id="countSubway">00</b><i class="toggle"><span></span></i></span>
+            </button>
+            <button class="layer-row" type="button" data-kind="tunnel" role="switch" aria-checked="true">
+              <span class="layer-row__key"><i class="layer-dot layer-dot--tunnel"></i><span>道路隧道<small>ROAD TUNNELS</small></span></span>
+              <span class="layer-row__tail"><b id="countTunnel">00</b><i class="toggle"><span></span></i></span>
+            </button>
+            <button class="layer-row" type="button" data-kind="water" role="switch" aria-checked="true">
+              <span class="layer-row__key"><i class="layer-dot layer-dot--water"></i><span>水脉暗渠<small>WATER / CULVERTS</small></span></span>
+              <span class="layer-row__tail"><b id="countWater">00</b><i class="toggle"><span></span></i></span>
+            </button>
+            <button class="layer-row" type="button" data-kind="utility" role="switch" aria-checked="true">
+              <span class="layer-row__key"><i class="layer-dot layer-dot--utility"></i><span>市政管廊<small>UTILITY TUNNELS</small></span></span>
+              <span class="layer-row__tail"><b id="countUtility">00</b><i class="toggle"><span></span></i></span>
+            </button>
+          </div>
+        </section>
+
+        <section class="panel-section panel-section--feed">
+          <div class="section-kicker">
+            <span>DATA CHANNEL</span>
+            <span class="section-kicker__value" id="feedTimestamp">--:--:--</span>
+          </div>
+          <div class="feed-row">
+            <span class="feed-source" id="dataSource">AWAITING AREA</span>
+            <span class="feed-count" id="dataCount">00 LINES</span>
+          </div>
+          <div class="feed-meter"><span id="feedMeter"></span></div>
+          <p class="feed-meta" id="dataMeta">Search a city or pan the map to load its subsurface.</p>
+          <button class="retry-link" id="retryFeed" type="button" hidden>RE-SCAN THIS AREA</button>
+          <div class="feed-footer">
+            <span><i class="status-light" id="feedDot"></i><b id="feedStatus">IDLE</b></span>
+            <span id="queryElapsed">0.0s</span>
+          </div>
+        </section>
+      </aside>
+
+      <aside class="panel panel--right" id="rightPanel" aria-label="Area intelligence and contact registry">
+        <div class="panel__corner panel__corner--a" aria-hidden="true"></div>
+        <div class="panel__corner panel__corner--b" aria-hidden="true"></div>
+
+        <div class="intel-head">
+          <div class="section-kicker">
+            <span>03 / AREA INTELLIGENCE</span>
+            <span class="mini-status"><i></i> <span id="intelFeed">FEED</span></span>
+          </div>
+          <button class="panel-close mobile-only" id="intelClose" type="button" aria-label="Close intelligence panel">×</button>
+          <h2 class="intel-head__title" id="intelTitle">—</h2>
+          <p class="intel-head__sub" id="intelSub">—</p>
+        </div>
+
+        <section class="panel-section panel-section--profile">
+          <div class="section-kicker">
+            <span>VERTICAL SECTION</span>
+            <span class="section-kicker__value">0 <i>→</i> −80 M</span>
+          </div>
+          <div class="depth-profile">
+            <svg id="depthProfile" viewBox="0 0 320 154" role="img" aria-label="Depth profile of underground contacts"></svg>
+          </div>
+          <div class="profile-readout">
+            <span>ACTIVE SLICE <b id="profileSlice">−60.0 M</b></span>
+            <span>CONTACTS <b id="profileContacts">00</b></span>
+          </div>
+        </section>
+
+        <section class="panel-section panel-section--stats">
+          <div class="stat-cell"><span>MAX DEPTH</span><strong id="maxDepth">−00.0<small>M</small></strong></div>
+          <div class="stat-cell"><span>NETWORK</span><strong id="networkLength">0.0<small>KM</small></strong></div>
+          <div class="stat-cell"><span>BUILDINGS</span><strong id="buildingCount">00<small>BLK</small></strong></div>
+        </section>
+
+        <section class="panel-section panel-section--registry">
+          <div class="section-kicker">
+            <span>CONTACT REGISTRY</span>
+            <span class="section-kicker__value" id="registryMeta">SORT / DEPTH</span>
+          </div>
+          <div class="registry-list" id="registryList" role="list"></div>
+        </section>
+
+        <div class="intel-facts" id="intelFacts"></div>
+      </aside>
+
+      <div class="contact-drawer" id="contactDrawer" hidden>
+        <div class="contact-drawer__bar"></div>
+        <button class="contact-drawer__close" id="closeContact" type="button" aria-label="Close contact detail">×</button>
+        <div class="contact-drawer__kicker"><span id="selectedId">CONTACT</span><span>VISUAL INSPECTION</span></div>
+        <div class="contact-drawer__main">
+          <div>
+            <h3 id="selectedName">—</h3>
+            <p id="selectedNote">—</p>
+          </div>
+          <div class="contact-drawer__depth">
+            <span>DEPTH</span>
+            <strong id="selectedDepth">−00.0<small>M</small></strong>
+          </div>
+        </div>
+        <div class="contact-drawer__meta">
+          <span><i>TYPE</i><b id="selectedKind">—</b></span>
+          <span><i>SOURCE</i><b id="selectedSource">—</b></span>
+          <span><i>RANGE</i><b id="selectedRange">—</b></span>
+          <span><i>COORD</i><b id="selectedCoord">—</b></span>
+          <button class="contact-drawer__focus" id="focusContact" type="button">
+            FOCUS <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 8h11M9 3.5 13.5 8 9 12.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <section class="bottom-dock" aria-label="Excavation depth control">
+        <div class="bottom-dock__scan" aria-hidden="true"></div>
+        <div class="dock-depth">
+          <span class="dock-depth__label">EXCAVATION / 开挖深度</span>
+          <div class="dock-depth__value">
+            <span class="dock-depth__minus">−</span><strong id="depthValue">60</strong><em>M</em>
+          </div>
+          <span class="dock-depth__mode" id="depthMode">SUBSURFACE SLICE</span>
+        </div>
+
+        <div class="dock-slider">
+          <div class="dock-slider__labels">
+            <span>0 M <i>GROUND</i></span>
+            <span>−80 M <i>BEDROCK</i></span>
+          </div>
+          <div class="depth-track">
+            <span class="depth-track__fill" id="depthFill"></span>
+            <div class="depth-track__ticks" aria-hidden="true">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+            <input id="depthSlider" type="range" min="0" max="80" step="1" value="60" aria-label="Excavation depth" />
+          </div>
+          <div class="depth-quick">
+            <button type="button" data-depth="0">0M</button>
+            <button type="button" data-depth="20">−20M</button>
+            <button type="button" data-depth="40">−40M</button>
+            <button type="button" data-depth="60">−60M</button>
+            <button type="button" data-depth="80">−80M</button>
+          </div>
+        </div>
+
+        <div class="dock-actions">
+          <div class="page-nav" role="group" aria-label="Step one stratum">
+            <button class="page-nav__btn" id="levelUp" type="button" title="Ascend one layer (PageUp)" aria-label="Ascend one layer">▲</button>
+            <button class="page-nav__btn" id="levelDown" type="button" title="Descend one layer (PageDown)" aria-label="Descend one layer">▼</button>
+          </div>
+          <button class="action-button action-button--ghost" id="autoScan" type="button" aria-pressed="false">
+            <svg class="icon-play" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 3.2 12 8l-7 4.8V3.2Z" fill="currentColor" /></svg>
+            <svg class="icon-pause" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 3.5h2v9H5zM9 3.5h2v9H9z" fill="currentColor" /></svg>
+            <span>AUTO</span>
+          </button>
+          <button class="dive-button" id="diveButton" type="button">
+            <span class="dive-button__icon">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v13M7 11l5 5 5-5M4 21h16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+            </span>
+            <span class="dive-button__copy"><b>一键潜入</b><small>DIVE INTO SUBTERRA</small></span>
+          </button>
+          <button class="icon-button icon-button--dock" id="resetView" type="button" aria-label="Reset view" title="Reset view (R)">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v6h-6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          </button>
+        </div>
+      </section>
+
+      <div class="level-ladder" id="levelLadder" aria-label="Subsurface levels"></div>
+
+      <div class="map-legend">
+        <span class="map-legend__title">DEPTH ENCODING <i>/ Z×2.2</i></span>
+        <span class="legend-line"><i class="legend-swatch legend-swatch--surface"></i>−10 M</span>
+        <span class="legend-line"><i class="legend-swatch legend-swatch--mid"></i>−30 M</span>
+        <span class="legend-line"><i class="legend-swatch legend-swatch--deep"></i>−60 M</span>
+      </div>
+
+      <div class="map-scale" id="mapScale">
+        <span class="map-scale__bar"></span>
+        <span id="mapScaleLabel">100 M</span>
+      </div>
+
+      <div class="attribution">
+        <span>© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> · <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OpenFreeMap</a> · <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OpenMapTiles</a> · <a href="https://www.esri.com/" target="_blank" rel="noreferrer">Esri</a> · <a href="https://photon.komoot.io/" target="_blank" rel="noreferrer">Photon</a> · ODbL</span>
+      </div>
+
+      <div class="hover-card" id="hoverCard" aria-hidden="true">
+        <span class="hover-card__type" id="hoverType">METRO</span>
+        <strong id="hoverName">—</strong>
+        <span class="hover-card__depth" id="hoverDepth">−00.0 M</span>
+      </div>
+
+      <div class="panel-backdrop mobile-only" id="panelBackdrop"></div>
+
+      <div class="boot" id="boot">
+        <div class="boot__grid" aria-hidden="true"></div>
+        <div class="boot__scan" aria-hidden="true"></div>
+        <div class="boot__frame">
+          <div class="boot__top">
+            <span class="boot__serial">ST-002 / GLOBAL TERMINAL</span>
+            <span class="boot__status"><i></i><span id="bootNetwork">LOCAL KERNEL</span></span>
+          </div>
+          <div class="boot__brand">
+            <span class="boot__word">SUBTERRA</span>
+            <span class="boot__sub">城市地下世界三维切片透视仪</span>
+          </div>
+          <div class="boot__orbit" aria-hidden="true">
+            <span class="boot__orbit-ring boot__orbit-ring--1"></span>
+            <span class="boot__orbit-ring boot__orbit-ring--2"></span>
+            <span class="boot__orbit-ring boot__orbit-ring--3"></span>
+            <span class="boot__orbit-core"></span>
+            <span class="boot__orbit-tick boot__orbit-tick--x"></span>
+            <span class="boot__orbit-tick boot__orbit-tick--y"></span>
+          </div>
+          <div class="boot__log">
+            <span id="bootLog">MOUNTING SUBSURFACE VOLUME</span>
+            <span class="boot__log-muted" id="bootSubline">CALIBRATING DEPTH STENCIL / 0.0 — 80.0 M</span>
+          </div>
+          <div class="boot__progress">
+            <div class="boot__progress-bar"><span id="bootProgress"></span></div>
+            <span id="bootPercent">00</span>
+          </div>
+          <div class="boot__foot">
+            <span>MAPLIBRE GL / THREE.JS</span>
+            <span>GLOBAL VECTOR TILES</span>
+            <span>LOCAL RENDER</span>
+          </div>
+        </div>
+        <div class="boot__depth-rail" aria-hidden="true">
+          <span>0</span><span>−20</span><span>−40</span><span>−60</span><span>−80</span>
+        </div>
+      </div>
+
+      <div class="help-modal" id="helpModal" hidden>
+        <div class="help-modal__scrim" data-close-help></div>
+        <div class="help-modal__sheet" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+          <button class="help-modal__close" id="helpClose" type="button" aria-label="Close help">×</button>
+          <span class="section-kicker"><span>FIELD MANUAL</span><span class="section-kicker__value">SUBTERRA / V2.0</span></span>
+          <h2 id="helpTitle">Search any city. Cut through it.</h2>
+          <p>搜索世界上任意城市，或者直接把地图拖到想看的街区。SubTerra 会实时提取该区域的地下隧道、地铁、暗渠和管廊，按真实深度重建三维结构。</p>
+          <div class="help-grid">
+            <div><span>01</span><b>SEARCH</b><p>Type any city, district or landmark. The globe is the dataset.</p></div>
+            <div><span>02</span><b>DESCEND</b><p>Press PageDown to drop one stratum at a time; PageUp climbs back out.</p></div>
+            <div><span>03</span><b>TRACE</b><p>Hover a conduit for its identity; click for the full contact record.</p></div>
+            <div><span>04</span><b>APERTURE</b><p>Resize the surgical cut to isolate a cylindrical core sample.</p></div>
+          </div>
+          <div class="help-keys">
+            <span><kbd>PgDn</kbd> DOWN</span><span><kbd>PgUp</kbd> UP</span><span><kbd>F</kbd> SEARCH</span><span><kbd>D</kbd> DIVE</span><span><kbd>S</kbd> SURFACE</span><span><kbd>A</kbd> AUTO</span><span><kbd>R</kbd> RESET</span><span><kbd>ESC</kbd> CLOSE</span>
+          </div>
+          <div class="help-attribution">
+            Basemap and building massing © OpenFreeMap / OpenMapTiles / OpenStreetMap contributors (ODbL). Subsurface geometry is extracted live from OpenMapTiles vector tiles: every tunnel, covered waterway and transit bore the world has mapped. Depths are inferred from OSM <code>layer</code> tags where present and from per-class priors otherwise; explicitly tagged depths are merged in when the Overpass API is reachable. Above-ground massing uses the schema's pre-computed <code>render_height</code>. Vertical section exaggerated ×2.2 for legibility.
+          </div>
+        </div>
+      </div>
+
+      <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

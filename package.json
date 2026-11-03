@@ -1,0 +1,30 @@
+{
+  "name": "subterra",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "SubTerra — 任意城市的交互式三维地下透视仪。搜索世界上任何一座城市，从地表逐层潜入地铁、隧道、暗渠与管廊。",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "check": "tsc --noEmit",
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:dry": "npm run build && wrangler deploy --dry-run"
+  },
+  "dependencies": {
+    "@fontsource-variable/space-grotesk": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@maplibre/maplibre-gl-style-spec": "^26.4.4",
+    "maplibre-gl": "^6.16.0",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}
