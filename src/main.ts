@@ -1678,7 +1678,12 @@ const configureMap = (): void => {
   renderAll();
   registerMapEvents();
   updateCompassAndReadout();
-  map.once('style.load', ensureCustomLayer);
+  map.once('style.load', () => {
+    // The container may still be at its pre-layout size when the map is first
+    // built, which would bake a wrong drawing buffer into the canvas.
+    map.resize();
+    ensureCustomLayer();
+  });
   // A style reload (which a long intercontinental flyTo can trigger) drops every
   // layer added at runtime. Polling is the only reliable guard: `style.load`
   // fires again but the custom layer is re-added asynchronously afterwards.
