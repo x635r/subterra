@@ -42,6 +42,7 @@ export interface RawUnderground {
   layer?: number;
   klass: string;
   subclass?: string;
+  service?: string;
 }
 
 export interface RawNode {
@@ -116,25 +117,82 @@ const hash = (value: string): number => {
  * stable jitter keyed on the feature id, so the same tube always lands at the
  * same depth across reloads and re-queries.
  */
+/**
+ * Depth inference.
+ *
+ * The OSM `layer` tag is a *relative stacking order*, not a distance in metres —
+ * the OSM wiki is explicit about this. Treating it as metres (the previous
+ * `layer * 8.5 + 4`) put the New York subway at 38 m when it actually runs
+ * 4–15 m below grade, because it is mostly cut-and-cover.
+ *
+ * So `layer` is used as an ordinal signal only: each step down adds a modest,
+ * mode-appropriate increment on top of a realistic base. The bases below are
+ * drawn from published running-tunnel depths for the major systems:
+ *
+ *   NYC 4–15 m (cut-and-cover) · Paris 5–20 · Tokyo 15–35 · Shanghai 10–25
+ *   Beijing 10–20 · Seoul 15–30 · London deep tube 20–40 · Moscow 20–50
+ *   Chongqing 20–60 (mountain city, deep mined bores)
+ *
+ * A median around 14 m plus ~4 m per layer step lands inside all of those
+ * bands. The residual jitter is deliberately small (±3 m): it exists to keep
+ * parallel bores from z-fighting, not to invent a 34 m spread.
+ */
+const BASE_DEPTH: Record<FeatureKind, number> = {
+  subway: 14,
+  tunnel: 15,
+  water: 3,
+  utility: 5,
+};
+
+/** Extra metres per negative `layer` step, per kind. */
+const LAYER_STEP: Record<FeatureKind, number> = {
+  subway: 4,
+  tunnel: 5,
+  water: 2,
+  utility: 2.5,
+};
+
+const MAX_DEPTH: Record<FeatureKind, number> = {
+  subway: 55,
+  tunnel: 70,
+  water: 18,
+  utility: 30,
+};
+
+/** Mode-specific offset: light rail and monorail run nearer the surface. */
+const MODE_OFFSET: Record<string, number> = {
+  subway: 0,
+  monorail: -5,
+  light_rail: -6,
+  tram: -8,
+  rail: 2,
+};
+
 const inferDepth = (
   kind: FeatureKind,
   layer: number | undefined,
   id: string,
+  subclass?: string,
 ): number => {
+  const base = BASE_DEPTH[kind];
+  const step = LAYER_STEP[kind];
+  const cap = MAX_DEPTH[kind];
+  const modeShift = MODE_OFFSET[subclass ?? ''] ?? 0;
+
+  // `hash` is stable per feature id, so a given bore always lands at the same
+  // depth across reloads; the (hash - 0.5) term centres the jitter on zero.
+  const jitter = (hash(id) - 0.5) * 6;
+
+  let depth: number;
   if (typeof layer === 'number' && layer < 0) {
-    return -clamp(Math.abs(layer) * 8.5 + 4, 4, 78);
+    // |layer| = 1 is the shallowest subsurface level.
+    depth = base + modeShift + (Math.abs(layer) - 1) * step + jitter;
+  } else {
+    // No stacking information: stay near the shallow end of the band.
+    depth = base + modeShift + jitter * 0.5;
   }
-  const jitter = hash(id);
-  switch (kind) {
-    case 'subway':
-      return -(14 + jitter * 34);
-    case 'water':
-      return -(3 + jitter * 12);
-    case 'utility':
-      return -(6 + jitter * 16);
-    default:
-      return -(6 + jitter * 26);
-  }
+
+  return -clamp(depth, 2.5, cap);
 };
 
 const classify = (
@@ -251,11 +309,12 @@ const parseTile = (
           id,
           coords: simplify(coords),
           kind,
-          depth: inferDepth(kind, layer, id),
+          depth: inferDepth(kind, layer, id, subclass),
           name: typeof props.name === 'string' ? props.name : undefined,
           layer,
           klass,
           subclass,
+          service: typeof props.service === 'string' ? props.service : undefined,
         });
       }
     }
@@ -442,10 +501,15 @@ export const fetchAreaUnderground = async (
     buildingCount += result.value.buildings.length;
   }
 
-  // Attach real street/tunnel names by proximity. The name layer stores the
-  // centreline of the same way, so a generous snapping radius reliably finds it.
+  // Only road tunnels get a snapped street name. The name layer holds zero
+  // transit entries, so borrowing a name for a metro bore would be wrong.
   const named = raw.map((entry) => {
     if (entry.name) return entry;
+    if (entry.kind === 'subway' || entry.kind === 'utility') return entry;
+    if (entry.klass !== 'motorway' && entry.klass !== 'trunk' &&
+        entry.klass !== 'primary' && entry.klass !== 'secondary' && entry.klass !== 'tertiary') {
+      return entry;
+    }
     const best = nearestName(entry.coords, names);
     return best ? { ...entry, name: best } : entry;
   });
@@ -489,8 +553,11 @@ export const fetchAreaUnderground = async (
 };
 
 /**
- * Finds the closest named line to a tunnel's geometry. Names come from the same
- * OSM way, so a point-to-point comparison over a small radius is enough.
+ * Attaches a name to a tunnel. The tiles only carry names for roads, so a
+ * subway bore must never borrow the street name above it — that produced
+ * confidently wrong labels like "泰山大道西段" on a metro tunnel. Rail geometry
+ * gets a classification-based label instead, and road tunnels keep their real
+ * street name.
  */
 const nearestName = (coords: LngLat[], names: RawName[]): string | null => {
   if (names.length === 0) return null;
@@ -537,12 +604,30 @@ const KIND_LABEL: Record<FeatureKind, string> = {
   utility: 'Utility',
 };
 
+const MODE_LABEL: Record<string, string> = {
+  subway: 'Metro bore',
+  monorail: 'Monorail bore',
+  light_rail: 'Light rail bore',
+  tram: 'Tram bore',
+  rail: 'Rail bore',
+};
+
 const labelFor = (entry: RawUnderground): string => {
   if (entry.kind === 'subway') {
-    return entry.subclass ? `Transit bore · ${entry.subclass}` : 'Transit bore';
+    const mode = MODE_LABEL[entry.subclass ?? ''] ?? 'Transit bore';
+    const service = entry.service;
+    if (service === 'siding') return `${mode} · siding`;
+    if (service === 'yard') return `${mode} · depot`;
+    // The layer number is the only stable per-bore identity the tiles carry, so
+    // surface it instead of inventing a street name.
+    if (typeof entry.layer === 'number') return `${mode} · L${entry.layer}`;
+    return mode;
   }
-  if (entry.klass === 'rail') return `Rail tunnel · ${entry.subclass ?? 'rail'}`;
+  if (entry.klass === 'rail') {
+    return entry.subclass ? `Rail tunnel · ${entry.subclass}` : 'Rail tunnel';
+  }
   if (entry.klass === 'motorway') return 'Road tunnel · motorway';
+  if (entry.klass === 'trunk') return 'Road tunnel · trunk';
   return `${KIND_LABEL[entry.kind]}${entry.klass ? ` · ${entry.klass}` : ''}`;
 };
 

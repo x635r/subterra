@@ -6,6 +6,17 @@ export const CITY_SHELL_LAYER = 'subterra-city-shell';
 export const CITY_SHELL_EDGE = 'subterra-city-shell-edge';
 export const FALLBACK_BASE_LAYER = 'subterra-esri-base';
 export const FALLBACK_LABEL_LAYER = 'subterra-esri-labels';
+export const TERRAIN_SOURCE = 'subterra-terrain';
+export const TERRAIN_HILLSHADE_LAYER = 'subterra-hillshade';
+
+/**
+ * Global elevation tiles (AWS Open Data, Terrarium encoding). Keyless, CORS-open,
+ * and readable pixel-by-pixel in the browser, which is what makes real 3D relief
+ * possible - essential in a city like Chongqing where the ground itself moves by
+ * a hundred metres across a single block.
+ */
+export const TERRAIN_TILES =
+  'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
 
 const patchLayer = (
   layers: StyleSpecification['layers'],
@@ -19,6 +30,15 @@ const patchLayer = (
 
 export const buildBasemapStyle = (): StyleSpecification => {
   const style = structuredClone(rawStyle) as unknown as StyleSpecification;
+
+  style.sources[TERRAIN_SOURCE] = {
+    type: 'raster-dem',
+    tiles: [TERRAIN_TILES],
+    tileSize: 256,
+    maxzoom: 12,
+    encoding: 'terrarium',
+    attribution: 'Elevation © AWS Open Data / Mapzen',
+  } as StyleSpecification['sources'][string];
 
   style.sources['subterra-esri-base'] = {
     type: 'raster',
@@ -149,6 +169,22 @@ export const buildBasemapStyle = (): StyleSpecification => {
     (entry) => entry.id === BASEMAP_LABEL_ANCHOR,
   );
   const insertAt = labelAnchorIndex >= 0 ? labelAnchorIndex : style.layers.length;
+
+  // Relief shading sits directly above the background so the terrain reads
+  // underneath every street, label and building.
+  style.layers.splice(1, 0, {
+    id: TERRAIN_HILLSHADE_LAYER,
+    type: 'hillshade',
+    source: TERRAIN_SOURCE,
+    paint: {
+      'hillshade-exaggeration': 0.42,
+      'hillshade-shadow-color': '#01080a',
+      'hillshade-highlight-color': '#1e5b58',
+      'hillshade-accent-color': '#0b2b2e',
+      'hillshade-illumination-direction': 315,
+      'hillshade-illumination-anchor': 'viewport',
+    },
+  } as StyleSpecification['layers'][number]);
 
   style.layers.splice(
     1,

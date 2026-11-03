@@ -10,7 +10,15 @@ import { describePoint, searchPlaces } from './services/geocode';
 import { fetchAreaUnderground } from './services/tiles';
 import { applyTaggedDepths, fetchTaggedDepths } from './services/overpass';
 import { SubsurfaceLayer, type NodeProjection } from './map/SubsurfaceLayer';
-import { CITY_SHELL_LAYER, FALLBACK_BASE_LAYER, FALLBACK_LABEL_LAYER, buildBasemapStyle } from './map/basemap';
+import {
+  CITY_SHELL_EDGE,
+  CITY_SHELL_LAYER,
+  TERRAIN_HILLSHADE_LAYER,
+  FALLBACK_BASE_LAYER,
+  FALLBACK_LABEL_LAYER,
+  TERRAIN_SOURCE,
+  buildBasemapStyle,
+} from './map/basemap';
 import { depthColor } from './map/palette';
 import type { AreaInfo, FeatureKind, LngLat, PlaceResult, SiteDataset, SubFeature } from './types';
 
@@ -105,6 +113,10 @@ const state = {
   autoScan: false,
   selectedIndex: null as number | null,
   visibleKinds: { subway: true, tunnel: true, water: true, utility: true } as Record<FeatureKind, boolean>,
+  // Terrain and 3D building massing fight each other in MapLibre: with a DEM
+  // attached, most extrusion tiles get culled because OpenMapTiles buildings
+  // carry no min/max elevation metadata. They are mutually exclusive.
+  scene: { terrain: true, buildings: false },
   feedState: 'idle' as FeedState,
   elapsed: 0,
   buildingCount: 0,
@@ -312,6 +324,9 @@ const loadArea = async (center: LngLat, options: { label?: string; zoom?: number
   // Re-anchor the Three.js scene on the new centre before the data arrives, so
   // geometry is never drawn relative to the previous city.
   layer.setSite(center);
+  // Anchor the volume to the ground under this new centre. DEM tiles load
+  // asynchronously, so re-check once the map settles.
+  layer.setGroundElevation(groundElevationAt(center));
   // The cut must always cover what was actually loaded, otherwise the overview
   // would mask away every line outside a small cylinder.
   layer.setAperture(Math.max(radius, fetchRadius * 1.05));
@@ -874,7 +889,8 @@ const updateSceneOpacity = (): void => {
   // fades so the buried network shows through. This is the core
   // "City Skylines -> PageDown -> underground" transition.
   try {
-    map.setPaintProperty(CITY_SHELL_LAYER, 'fill-extrusion-opacity', 0.62 - open * 0.5);
+    const base = state.scene.buildings ? 0.62 : 0;
+    map.setPaintProperty(CITY_SHELL_LAYER, 'fill-extrusion-opacity', base - open * base * 0.8);
     if (fallbackBasemap) {
       if (map.getLayer(FALLBACK_BASE_LAYER)) map.setPaintProperty(FALLBACK_BASE_LAYER, 'raster-opacity', 1 - open * 0.14);
       if (map.getLayer(FALLBACK_LABEL_LAYER)) map.setPaintProperty(FALLBACK_LABEL_LAYER, 'raster-opacity', 0.92 - open * 0.22);
@@ -887,6 +903,79 @@ const updateSceneOpacity = (): void => {
  * additions whenever the style is reloaded, which can happen after a long
  * intercontinental jump.
  */
+/**
+ * Turns on real 3D relief. MapLibre reads the DEM tiles and renders the ground
+ * mesh; our Three.js layer then queries the same DEM so tunnels sit at their true
+ * depth below the *local* surface rather than below sea level. In Chongqing that
+ * difference is the whole point: the city climbs 200 m from the river to the
+ * ridge, so a flat reference plane hides the vertical structure entirely.
+ */
+let terrainEnabled = false;
+
+const enableTerrain = (): void => {
+  if (terrainEnabled) return;
+  try {
+    if (!map.getSource(TERRAIN_SOURCE)) return;
+    // `setTerrain` before the first paint forces MapLibre to build the DEM
+    // pipeline inside the initial style cycle, which stalls `style.load`
+    // indefinitely on some networks. Turn it on only once the map is idle.
+    map.setTerrain({ source: TERRAIN_SOURCE, exaggeration: 1 });
+    terrainEnabled = true;
+    syncGroundElevation();
+  } catch {}
+};
+
+/** Defers terrain until the map has finished its first render pass. */
+const scheduleTerrain = (): void => {
+  if (terrainEnabled) return;
+  let done = false;
+  const go = (): void => {
+    if (done) return;
+    done = true;
+    enableTerrain();
+  };
+  map.once('idle', () => window.setTimeout(go, 400));
+  window.setTimeout(go, 12_000);
+};
+
+/**
+ * DEM tiles arrive after `style.load`, so the first elevation query usually
+ * returns null. Re-run on idle (and once more on a short delay) until the
+ * surface height is actually known, then lift the volume onto it.
+ */
+const syncGroundElevation = (): void => {
+  const apply = (): boolean => {
+    if (!terrainEnabled) return false;
+    const elevation = groundElevationAt(state.center);
+    if (Number.isFinite(elevation) && elevation !== 0) {
+      layer.setGroundElevation(elevation);
+      return true;
+    }
+    return false;
+  };
+  if (apply()) return;
+  // Poll briefly instead of hooking `idle`: registering extra `idle` listeners
+  // during startup competes with the initial style/paint cycle.
+  let tries = 0;
+  const tick = (): void => {
+    if (apply() || tries >= 15) return;
+    tries += 1;
+    window.setTimeout(tick, 700);
+  };
+  window.setTimeout(tick, 700);
+};
+
+/** Local ground elevation in metres, or 0 when the DEM is unavailable. */
+const groundElevationAt = (coords: LngLat): number => {
+  try {
+    if (!terrainEnabled) return 0;
+    const value = map.queryTerrainElevation(coords);
+    return Number.isFinite(value as number) ? (value as number) : 0;
+  } catch {
+    return 0;
+  }
+};
+
 const ensureCityShell = (): void => {
   try {
     if (map.getLayer(CITY_SHELL_LAYER)) return;
@@ -927,6 +1016,48 @@ const updateLayerButtons = (): void => {
   renderRegistry();
   updateProfileSelection();
   updateStats();
+};
+
+// ---------------------------------------------------------------- scene modes
+/**
+ * Applies the terrain / building selection. Only one can be active: enabling
+ * terrain hides the massing because MapLibre culls extrusion tiles that lack
+ * elevation metadata, which would leave the city half-drawn.
+ */
+const applySceneMode = (): void => {
+  const wantTerrain = state.scene.terrain;
+  const wantBuildings = state.scene.buildings;
+
+  try {
+    if (wantTerrain && !terrainEnabled) {
+      enableTerrain();
+    } else if (!wantTerrain && terrainEnabled) {
+      map.setTerrain(null);
+      terrainEnabled = false;
+    }
+  } catch {}
+
+  if (map.getLayer(CITY_SHELL_LAYER)) {
+    map.setLayoutProperty(CITY_SHELL_LAYER, 'visibility', wantBuildings ? 'visible' : 'none');
+  }
+  if (map.getLayer(CITY_SHELL_EDGE)) {
+    map.setLayoutProperty(CITY_SHELL_EDGE, 'visibility', wantBuildings ? 'visible' : 'none');
+  }
+  // The hillshade overlay only makes sense without the massing covering it.
+  if (map.getLayer(TERRAIN_HILLSHADE_LAYER)) {
+    map.setLayoutProperty(TERRAIN_HILLSHADE_LAYER, 'visibility', wantTerrain ? 'visible' : 'none');
+  }
+
+  $$('.layer-row--terrain').forEach((row) => {
+    const key = (row as HTMLElement).dataset.scene as 'terrain' | 'buildings';
+    row.setAttribute('aria-checked', String(state.scene[key]));
+    row.classList.toggle('is-off', !state.scene[key]);
+  });
+  if (wantTerrain) {
+    syncGroundElevation();
+  } else {
+    layer.setGroundElevation(0);
+  }
 };
 
 // ---------------------------------------------------------------- scan control
@@ -1389,7 +1520,29 @@ const bindUI = (): void => {
 
   $$('.layer-row').forEach((row) => {
     row.addEventListener('click', () => {
-      const kind = (row as HTMLElement).dataset.kind as FeatureKind;
+      const element = row as HTMLElement;
+      const sceneKey = element.dataset.scene as 'terrain' | 'buildings' | undefined;
+      if (sceneKey) {
+        // Terrain and massing are mutually exclusive, so enabling one clears
+        // the other rather than letting the user build an unreadable scene.
+        const next = !state.scene[sceneKey];
+        state.scene[sceneKey] = next;
+        if (next) state.scene[sceneKey === 'terrain' ? 'buildings' : 'terrain'] = false;
+        applySceneMode();
+        showToast(
+          next
+            ? sceneKey === 'terrain'
+              ? '3D RELIEF ON / 建筑体块已隐藏'
+              : 'CITY MASSING ON / 三维地形已关闭'
+            : sceneKey === 'terrain'
+              ? '3D RELIEF OFF / 返回平面底图'
+              : 'CITY MASSING OFF / 建筑体块已隐藏',
+          'info',
+          2400,
+        );
+        return;
+      }
+      const kind = element.dataset.kind as FeatureKind;
       if (!kind) return;
       state.visibleKinds[kind] = !state.visibleKinds[kind];
       updateLayerButtons();
@@ -1683,6 +1836,8 @@ const configureMap = (): void => {
     // built, which would bake a wrong drawing buffer into the canvas.
     map.resize();
     ensureCustomLayer();
+    applySceneMode();
+    scheduleTerrain();
   });
   // A style reload (which a long intercontinental flyTo can trigger) drops every
   // layer added at runtime. Polling is the only reliable guard: `style.load`
