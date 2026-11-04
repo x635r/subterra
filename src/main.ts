@@ -526,6 +526,12 @@ const updateFeedDetails = (): void => {
           : `${state.elapsed.toFixed(1)} S`
         : 'OFFLINE';
   $('#buildingCount').innerHTML = `${String(state.buildingCount).padStart(2, '0')}<small>BLK</small>`;
+  const toggleCount = document.getElementById('countBuildings');
+  if (toggleCount) {
+    toggleCount.textContent = state.buildingCount > 0
+      ? String(state.buildingCount).padStart(2, '0')
+      : '—';
+  }
   if (!state.loading && state.feedState !== 'loading') {
     if (state.feedState === 'enriched') {
       dataMeta.textContent = dataset.note ?? 'Vector tiles with explicit OSM depth tags merged.';
@@ -822,6 +828,12 @@ const updateStats = (): void => {
   $('#maxDepth').innerHTML = `−${maxDepth.toFixed(1)}<small>M</small>`;
   $('#networkLength').innerHTML = `${length.toFixed(1)}<small>KM</small>`;
   $('#buildingCount').innerHTML = `${String(state.buildingCount).padStart(2, '0')}<small>BLK</small>`;
+  const toggleCount = document.getElementById('countBuildings');
+  if (toggleCount) {
+    toggleCount.textContent = state.buildingCount > 0
+      ? String(state.buildingCount).padStart(2, '0')
+      : '—';
+  }
   const kicker = $('#intelFacts');
   const subway = features.filter((f) => f.kind === 'subway').length;
   const water = features.filter((f) => f.kind === 'water').length;
@@ -1734,10 +1746,18 @@ const configureMap = (): void => {
   updateCompassAndReadout();
   map.once('style.load', () => {
     // The container may still be at its pre-layout size when the map is first
-    // built, which would bake a wrong drawing buffer into the canvas.
+    // built, which would bake a wrong drawing buffer into the canvas. Resize
+    // now, then again after layout settles — one call is not enough because
+    // `style.load` can fire before the flex layout resolves.
     map.resize();
     ensureCustomLayer();
     applySceneMode();
+    for (const delay of [80, 300, 900, 2000]) {
+      window.setTimeout(() => {
+        if (!map.getCanvas().clientWidth) return;
+        map.resize();
+      }, delay);
+    }
   });
   // A style reload (which a long intercontinental flyTo can trigger) drops every
   // layer added at runtime. Polling is the only reliable guard: `style.load`
