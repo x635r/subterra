@@ -82,6 +82,7 @@ const NODE_LABEL: Record<string, string> = {
   junction: 'JUNCTION',
   shaft: 'SHAFT',
   outfall: 'OUTFALL',
+  poi: 'UNDERGROUND POI',
 };
 
 const formatDepth = (depth: number): string => `−${Math.abs(depth).toFixed(1)} M`;
@@ -335,7 +336,9 @@ const loadArea = async (center: LngLat, options: { label?: string; zoom?: number
 
     let dataset: SiteDataset = {
       features: result.features,
-      nodes: result.nodes,
+      // Junction nodes come first; underground POIs are appended so a real
+      // shop or station label can still win a slot in the floating tag budget.
+      nodes: [...result.nodes, ...result.pois],
       source: 'live',
       updatedAt: Date.now(),
       note: 'Extracted live from OpenMapTiles vector tiles.',
@@ -526,6 +529,11 @@ const updateFeedDetails = (): void => {
           : `${state.elapsed.toFixed(1)} S`
         : 'OFFLINE';
   $('#buildingCount').innerHTML = `${String(state.buildingCount).padStart(2, '0')}<small>BLK</small>`;
+  const poiTotal = state.dataset.nodes.filter((node) => node.kind === 'poi').length;
+  const poiEl = document.getElementById('poiCount');
+  if (poiEl) {
+    poiEl.innerHTML = `${String(poiTotal).padStart(2, '0')}<small>PTS</small>`;
+  }
   const toggleCount = document.getElementById('countBuildings');
   if (toggleCount) {
     toggleCount.textContent = state.buildingCount > 0
@@ -557,7 +565,10 @@ const buildTagElement = (nodeId: string, name: string, kind: string, depth: numb
   const element = document.createElement('div');
   element.className = 'site-tag';
   element.dataset.nodeId = nodeId;
-  element.style.setProperty('--tag-color', depthColor(Math.abs(depth)));
+  element.style.setProperty(
+    '--tag-color',
+    kind === 'poi' ? '#c9a3ff' : depthColor(Math.abs(depth)),
+  );
   const dot = document.createElement('span');
   dot.className = 'site-tag__dot';
   const stem = document.createElement('span');
@@ -639,7 +650,10 @@ function updateFloatingScene(nodes: NodeProjection[]): void {
     entry.element.style.transform = `translate3d(${projection.x.toFixed(1)}px, ${projection.y.toFixed(1)}px, 0)`;
     entry.element.classList.toggle('is-flipped', flipped);
     entry.element.classList.add('is-visible');
-    entry.element.style.setProperty('--tag-color', depthColor(Math.abs(projection.depth)));
+    entry.element.style.setProperty(
+      '--tag-color',
+      projection.node.kind === 'poi' ? '#c9a3ff' : depthColor(Math.abs(projection.depth)),
+    );
   });
 
   const center = layer.projectCenter();

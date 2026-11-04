@@ -1,6 +1,6 @@
 export type FeatureKind = 'subway' | 'tunnel' | 'water' | 'utility';
 
-export type NodeKind = 'station' | 'junction' | 'shaft' | 'outfall';
+export type NodeKind = 'station' | 'junction' | 'shaft' | 'outfall' | 'poi';
 
 export type DataSource = 'live' | 'preset' | 'hybrid';
 
@@ -26,6 +26,8 @@ export interface SubNode {
   depth: number;
   source: 'osm' | 'preset';
   detail?: string;
+  /** POI category for nodes that came from a mapped point of interest. */
+  className?: string;
 }
 
 export interface SiteDataset {

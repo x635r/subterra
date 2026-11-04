@@ -31,6 +31,7 @@ interface DecodedTile {
   nodes: RawNode[];
   buildings: RawBuilding[];
   names: RawName[];
+  pois: RawUndergroundPoi[];
 }
 
 export interface RawUnderground {
@@ -43,6 +44,9 @@ export interface RawUnderground {
   klass: string;
   subclass?: string;
   service?: string;
+  /** Stable OSM way id, used as the depth-jitter seed across tile seams. */
+  wayKey: string;
+  depthResolved?: boolean;
 }
 
 export interface RawNode {
@@ -50,6 +54,18 @@ export interface RawNode {
   coords: LngLat;
   kind: SubNode['kind'];
   name: string;
+  depth: number;
+  /** POI category, when the node came from a real mapped point of interest. */
+  className?: string;
+}
+
+/** A mapped point of interest that OSM records below ground level. */
+export interface RawUndergroundPoi {
+  id: string;
+  coords: LngLat;
+  name: string;
+  className: string;
+  level: number;
   depth: number;
 }
 
@@ -168,31 +184,76 @@ const MODE_OFFSET: Record<string, number> = {
   rail: 2,
 };
 
+/**
+ * A realistic running-tunnel depth band per kind. The lower bound is the
+ * shallowest a bore of that type normally sits; the upper bound is the deepest
+ * plausible one.
+ */
+const DEPTH_BAND: Record<FeatureKind, [number, number]> = {
+  subway: [8, 42],
+  tunnel: [6, 60],
+  water: [2, 16],
+  utility: [3, 26],
+};
+
+/**
+ * Maps an OSM `layer` value onto a position inside the band.
+ *
+ * `layer` is a *relative stacking order*, and its range differs wildly by city:
+ * Shanghai uses -10…-1 while Chongqing only uses -4…-2. Multiplying by a fixed
+ * metres-per-layer therefore produces absurd depths in Shanghai (85 m) and
+ * compressed ones in Chongqing. Normalising by the range actually present in
+ * the area being loaded keeps every city inside its realistic band.
+ */
+interface LayerRange {
+  min: number; // most negative layer seen (deepest stacking level)
+  max: number; // shallowest negative layer (closest to -1)
+}
+
 const inferDepth = (
   kind: FeatureKind,
   layer: number | undefined,
-  id: string,
+  seed: string,
   subclass?: string,
+  range?: LayerRange,
 ): number => {
-  const base = BASE_DEPTH[kind];
-  const step = LAYER_STEP[kind];
-  const cap = MAX_DEPTH[kind];
+  const [lo, hi] = DEPTH_BAND[kind];
   const modeShift = MODE_OFFSET[subclass ?? ''] ?? 0;
 
-  // `hash` is stable per feature id, so a given bore always lands at the same
-  // depth across reloads; the (hash - 0.5) term centres the jitter on zero.
-  const jitter = (hash(id) - 0.5) * 6;
+  // +-1.2 m of stable jitter separates parallel bores without inventing bands.
+  const jitter = (hash(seed) - 0.5) * 2.4;
 
   let depth: number;
   if (typeof layer === 'number' && layer < 0) {
-    // |layer| = 1 is the shallowest subsurface level.
-    depth = base + modeShift + (Math.abs(layer) - 1) * step + jitter;
+    if (range && range.min < -1) {
+      // 0 = shallowest level (layer -1), 1 = deepest level seen in this area.
+      const span = Math.max(1, Math.abs(range.min) - Math.abs(range.max));
+      const t = clamp((Math.abs(layer) - Math.abs(range.max)) / span, 0, 1);
+      depth = lo + (hi - lo) * t;
+    } else {
+      // Only one level present: sit in the shallow third of the band.
+      depth = lo + (hi - lo) * 0.3;
+    }
   } else {
-    // No stacking information: stay near the shallow end of the band.
-    depth = base + modeShift + jitter * 0.5;
+    // No stacking information at all: assume a typical shallow bore.
+    depth = lo + (hi - lo) * 0.25;
   }
 
-  return -clamp(depth, 2.5, cap);
+  return -clamp(depth + modeShift + jitter, 2, hi + 4);
+};
+
+/** The most and least negative `layer` present in a set of features. */
+const layerRangeOf = (features: RawUnderground[]): LayerRange | undefined => {
+  let min = 0;
+  let max = -1;
+  let seen = false;
+  for (const entry of features) {
+    if (typeof entry.layer !== 'number' || entry.layer >= 0) continue;
+    seen = true;
+    if (entry.layer < min) min = entry.layer;
+    if (entry.layer > max) max = entry.layer;
+  }
+  return seen ? { min, max } : undefined;
 };
 
 const classify = (
@@ -257,6 +318,7 @@ const parseTile = (
   const nodes: RawNode[] = [];
   const buildings: RawBuilding[] = [];
   const names: RawName[] = [];
+  const pois: RawUndergroundPoi[] = [];
 
   // Road and tunnel names live in their own layer, so collect them first and
   // match by proximity once the tunnel geometry is known.
@@ -301,15 +363,21 @@ const parseTile = (
       if (!kind) continue;
       if (feature.type !== 2) continue; // only LineString
       const raw = feature.loadGeometry() as Array<Array<{ x: number; y: number }>>;
+      // The vector tile carries a stable OSM way id. Using it (rather than a
+      // tile-local counter) is what keeps one physical tunnel at one depth
+      // across tile seams — otherwise the hash-driven jitter differs per tile
+      // and the line visibly steps.
+      const wayId = typeof feature.id === 'number' ? String(feature.id) : `${z}-${tx}-${ty}-${i}`;
       for (let part = 0; part < raw.length; part += 1) {
         const coords = decodeRing(raw[part], z, tx, ty, extent);
         if (coords.length < 2) continue;
-        const id = `t-${z}-${tx}-${ty}-${i}-${part}`;
+        const id = `way-${wayId}-${part}`;
         features.push({
           id,
           coords: simplify(coords),
           kind,
-          depth: inferDepth(kind, layer, id, subclass),
+          depth: 0, // filled in after the tile's layer range is known
+          wayKey: wayId,
           name: typeof props.name === 'string' ? props.name : undefined,
           layer,
           klass,
@@ -336,14 +404,16 @@ const parseTile = (
       for (let part = 0; part < raw.length; part += 1) {
         const coords = decodeRing(raw[part], z, tx, ty, extent);
         if (coords.length < 2) continue;
-        const id = `w-${z}-${tx}-${ty}-${i}-${part}`;
+        const wayId = typeof feature.id === 'number' ? String(feature.id) : `${z}-${tx}-${ty}-${i}`;
+        const id = `water-${wayId}-${part}`;
         const layerProp = props.layer;
         const layer = typeof layerProp === 'number' ? layerProp : undefined;
         features.push({
           id,
           coords: simplify(coords),
           kind: 'water',
-          depth: inferDepth('water', layer, id),
+          depth: 0, // filled in after the tile's layer range is known
+          wayKey: wayId,
           name:
             (typeof props['name:zh'] === 'string' && props['name:zh']) ||
             (typeof props['name:en'] === 'string' && props['name:en']) ||
@@ -381,7 +451,48 @@ const parseTile = (
     }
   }
 
-  return { features, nodes, buildings, names };
+  // Underground points of interest: shops, stations, car parks and amenities
+  // that OSM records on a negative floor. Tokyo and London map hundreds of
+  // these, and they are the only tile data that describes what actually *occupies*
+  // the subsurface rather than what passes through it.
+  const poiLayer = tile.layers.poi;
+  if (poiLayer) {
+    for (let i = 0; i < poiLayer.length; i += 1) {
+      const feature = poiLayer.feature(i);
+      if (feature.type !== 1) continue; // points only
+      const props = feature.properties as Record<string, unknown>;
+      const levelProp = props.level;
+      const level = typeof levelProp === 'number' ? levelProp : Number.parseInt(String(levelProp ?? ''), 10);
+      if (!Number.isFinite(level) || level >= 0) continue;
+      const name =
+        (typeof props['name:zh'] === 'string' && props['name:zh']) ||
+        (typeof props['name:en'] === 'string' && props['name:en']) ||
+        (typeof props.name === 'string' && props.name) ||
+        '';
+      if (!name) continue;
+      const geometry = feature.loadGeometry() as Array<Array<{ x: number; y: number }>>;
+      const point = geometry[0]?.[0];
+      if (!point) continue;
+      const coords = tileToLngLat(point.x, point.y, z, tx, ty, poiLayer.extent ?? 4096);
+      const className = typeof props.class === 'string' ? props.class : 'amenity';
+      const wayId = typeof feature.id === 'number' ? String(feature.id) : `${z}-${tx}-${ty}-${i}`;
+      pois.push({
+        id: `poi-${wayId}`,
+        coords,
+        name: name.slice(0, 60),
+        className,
+        level,
+        // One building storey is conventionally ~3.5 m below grade.
+        depth: -(Math.abs(level) * 3.5 + 3),
+      });
+    }
+  }
+
+  // Depth is resolved at the *area* level, not per tile: the same OSM way can
+  // appear in several tiles, and a per-tile layer range would give its segments
+  // different depths — the exact seam that produced visible gaps.
+
+  return { features, nodes, buildings, names, pois };
 };
 
 const loadTileJson = async (): Promise<string> => {
@@ -466,7 +577,12 @@ export interface AreaQuery {
  */
 export const fetchAreaUnderground = async (
   query: AreaQuery,
-): Promise<{ features: SubFeature[]; nodes: SubNode[]; buildingCount: number }> => {
+): Promise<{
+  features: SubFeature[];
+  nodes: SubNode[];
+  buildingCount: number;
+  pois: SubNode[];
+}> => {
   const { center, radiusMeters, maxFeatures = 900, zoom = 14 } = query;
   const z = zoom;
   const latSpan = radiusMeters / 111_320;
@@ -493,12 +609,21 @@ export const fetchAreaUnderground = async (
   const tiles = await Promise.allSettled(jobs);
   const raw: RawUnderground[] = [];
   const names: RawName[] = [];
+  const rawPois: RawUndergroundPoi[] = [];
   let buildingCount = 0;
   for (const result of tiles) {
     if (result.status !== 'fulfilled') continue;
     raw.push(...result.value.features);
     names.push(...result.value.names);
+    rawPois.push(...result.value.pois);
     buildingCount += result.value.buildings.length;
+  }
+
+  // Resolve depths once, over the whole loaded area, so one physical way always
+  // lands at one depth no matter which tile its segments came from.
+  const areaRange = layerRangeOf(raw);
+  for (const entry of raw) {
+    entry.depth = inferDepth(entry.kind, entry.layer, entry.wayKey, entry.subclass, areaRange);
   }
 
   // Only road tunnels get a snapped street name. The name layer holds zero
@@ -549,7 +674,29 @@ export const fetchAreaUnderground = async (
   }));
 
   const nodes = deriveNodes(features);
-  return { features, nodes, buildingCount };
+
+  // Surface the underground POIs as nodes so they get the same floating labels
+  // and click-to-inspect treatment as derived junctions.
+  const seenPoi = new Set<string>();
+  const poiNodes: SubNode[] = [];
+  for (const poi of rawPois) {
+    const key = poi.name.trim().toLowerCase();
+    if (seenPoi.has(key)) continue;
+    seenPoi.add(key);
+    poiNodes.push({
+      id: poi.id,
+      coords: poi.coords,
+      kind: 'poi',
+      name: poi.name,
+      depth: Number(poi.depth.toFixed(1)),
+      source: 'preset',
+      detail: `POI / ${poi.className.toUpperCase()} / L${poi.level}`,
+      className: poi.className,
+    });
+    if (poiNodes.length >= 24) break;
+  }
+
+  return { features, nodes, buildingCount, pois: poiNodes };
 };
 
 /**
