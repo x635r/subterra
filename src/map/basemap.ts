@@ -6,17 +6,6 @@ export const CITY_SHELL_LAYER = 'subterra-city-shell';
 export const CITY_SHELL_EDGE = 'subterra-city-shell-edge';
 export const FALLBACK_BASE_LAYER = 'subterra-esri-base';
 export const FALLBACK_LABEL_LAYER = 'subterra-esri-labels';
-export const TERRAIN_SOURCE = 'subterra-terrain';
-export const TERRAIN_HILLSHADE_LAYER = 'subterra-hillshade';
-
-/**
- * Global elevation tiles (AWS Open Data, Terrarium encoding). Keyless, CORS-open,
- * and readable pixel-by-pixel in the browser, which is what makes real 3D relief
- * possible - essential in a city like Chongqing where the ground itself moves by
- * a hundred metres across a single block.
- */
-export const TERRAIN_TILES =
-  'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
 
 const patchLayer = (
   layers: StyleSpecification['layers'],
@@ -30,15 +19,6 @@ const patchLayer = (
 
 export const buildBasemapStyle = (): StyleSpecification => {
   const style = structuredClone(rawStyle) as unknown as StyleSpecification;
-
-  style.sources[TERRAIN_SOURCE] = {
-    type: 'raster-dem',
-    tiles: [TERRAIN_TILES],
-    tileSize: 256,
-    maxzoom: 12,
-    encoding: 'terrarium',
-    attribution: 'Elevation © AWS Open Data / Mapzen',
-  } as StyleSpecification['sources'][string];
 
   style.sources['subterra-esri-base'] = {
     type: 'raster',
@@ -170,22 +150,6 @@ export const buildBasemapStyle = (): StyleSpecification => {
   );
   const insertAt = labelAnchorIndex >= 0 ? labelAnchorIndex : style.layers.length;
 
-  // Relief shading sits directly above the background so the terrain reads
-  // underneath every street, label and building.
-  style.layers.splice(1, 0, {
-    id: TERRAIN_HILLSHADE_LAYER,
-    type: 'hillshade',
-    source: TERRAIN_SOURCE,
-    paint: {
-      'hillshade-exaggeration': 0.42,
-      'hillshade-shadow-color': '#01080a',
-      'hillshade-highlight-color': '#1e5b58',
-      'hillshade-accent-color': '#0b2b2e',
-      'hillshade-illumination-direction': 315,
-      'hillshade-illumination-anchor': 'viewport',
-    },
-  } as StyleSpecification['layers'][number]);
-
   style.layers.splice(
     1,
     0,
@@ -219,17 +183,17 @@ export const buildBasemapStyle = (): StyleSpecification => {
         ['linear'],
         ['coalesce', ['get', 'render_height'], 12],
         0,
-        '#3a7a80',
+        '#2f6a70',
         24,
-        '#4d9a9c',
+        '#418c8e',
         70,
-        '#67c2ba',
+        '#5fb3ac',
         160,
-        '#8ee6d8',
+        '#8ad6cc',
       ],
       'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 12],
       'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
-      'fill-extrusion-opacity': 0.42,
+      'fill-extrusion-opacity': 0.72,
       'fill-extrusion-vertical-gradient': true,
     },
   } as StyleSpecification['layers'][number]);

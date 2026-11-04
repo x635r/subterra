@@ -193,9 +193,6 @@ export class SubsurfaceLayer implements CustomLayerInterface {
   private selectedNodeIndex = -1;
   private visibleKinds = new Set<FeatureKind>(['subway', 'tunnel', 'water', 'utility']);
   private time = 0;
-  /** Local ground elevation, added to every Z so the volume tracks the terrain. */
-  private groundElevation = 0;
-  private rebuildPending = false;
   private lastFrame = 0;
 
   private sharedLineUniforms = {
@@ -308,11 +305,10 @@ export class SubsurfaceLayer implements CustomLayerInterface {
 
   /**
    * Converts every feature and node into local metres and samples the geometry
-   * for picking. Kept separate from `setDataset` because the ground elevation can
-   * change independently once 3D terrain reports the local surface height.
+   * for picking. Kept separate from `setDataset` so the geometry can be rebuilt
+   * without resetting the user's selection state.
    */
   private rebuildLocalFeatures(): void {
-    const lift = this.groundElevation;
     this.localFeatures = this.dataset.features.map((feature, index) => {
       const seed = hash(feature.id);
       const rawPoints = feature.coords
@@ -330,7 +326,7 @@ export class SubsurfaceLayer implements CustomLayerInterface {
           const wave =
             Math.sin((pointIndex / n) * Math.PI * 2.2 + seed * 9) * 0.58 +
             Math.sin((pointIndex / n) * Math.PI * 5.1 + seed * 3) * 0.22;
-          return new THREE.Vector3(local.x, local.y, feature.depth + wave + lift);
+          return new THREE.Vector3(local.x, local.y, feature.depth + wave);
         })
         .filter((point): point is THREE.Vector3 => Boolean(point));
       const points =
@@ -343,7 +339,7 @@ export class SubsurfaceLayer implements CustomLayerInterface {
     });
 
     this.localNodes = this.dataset.nodes.map((node, index) => {
-      const local = this.toLocal(node.coords, node.depth + lift);
+      const local = this.toLocal(node.coords, node.depth);
       return {
         node,
         x: local.x,
@@ -385,30 +381,6 @@ export class SubsurfaceLayer implements CustomLayerInterface {
 
   setScanDepth(depthMeters: number): void {
     this.scanTarget = clamp(depthMeters, 0, 80);
-  }
-
-  /**
-   * Anchors the sub-surface volume to the local ground surface. With 3D terrain
-   * on, sea-level zero would float tunnels far above or below the visible ground
-   * in a hilly city, so every Z is offset by the elevation at the cut centre.
-   */
-  setGroundElevation(elevationMeters: number): void {
-    const next = Number.isFinite(elevationMeters) ? elevationMeters : 0;
-    if (Math.abs(next - this.groundElevation) < 0.2) return;
-    this.groundElevation = next;
-    if (this.dataset.features.length === 0) return;
-    // Rebuild geometry on the next frame: doing it synchronously from an event
-    // handler can run mid-render and leave the scene half-updated.
-    if (this.rebuildPending) return;
-    this.rebuildPending = true;
-    requestAnimationFrame(() => {
-      this.rebuildPending = false;
-      this.rebuildLocalFeatures();
-      this.rebuildFeatures();
-      this.rebuildNodes();
-      this.rebuildShafts();
-      this.map?.triggerRepaint();
-    });
   }
 
   /** Keeps the excavation grid invisible until the basemap has actually painted. */

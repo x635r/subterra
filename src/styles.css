@@ -903,25 +903,17 @@ a {
   box-shadow: 0 0 8px rgba(244, 166, 98, 0.3);
 }
 
-.layer-dot--terrain {
-  background: linear-gradient(150deg, #8ee6d8, #2f6f74);
-  box-shadow: 0 0 8px rgba(142, 230, 216, 0.32);
-}
-
 .layer-dot--buildings {
   background: #6f9fa6;
   box-shadow: 0 0 8px rgba(111, 159, 166, 0.3);
 }
 
-/* The two scene switches control the whole viewport, so they sit apart from the
-   per-network filters above them. */
-.layer-row--terrain {
-  border-top: 1px solid rgba(149, 204, 196, 0.09);
-}
-
-.layer-row--terrain:first-of-type {
+/* The massing switch controls the whole viewport, so it sits apart from the
+   per-network filters above it. */
+.layer-row--scene {
   margin-top: 4px;
   padding-top: 6px;
+  border-top: 1px solid rgba(149, 204, 196, 0.09);
 }
 
 .layer-row__tail {
